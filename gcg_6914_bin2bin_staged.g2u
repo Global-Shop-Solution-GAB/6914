@@ -1,0 +1,201 @@
+﻿Program.Sub.Preflight.Start
+f.Data.DataTable.Create("dtToMove",True)
+f.Data.DataTable.AddColumn("dtToMove","TRANSID","String","",10)
+f.Data.DataTable.AddColumn("dtToMove","PART","String","",20)
+f.Data.DataTable.addColumn("dtToMove","QTY","String","",15)
+f.Data.DataTable.AddColumn("dtToMove","LOT","String","",15)
+f.Data.DataTable.AddColumn("dtToMove","BIN","String","",6)
+f.Data.DataTable.AddColumn("dtToMove","HEAT","String","",15)
+f.Data.DataTable.AddColumn("dtToMove","SERIAL","String","",30)
+F.Data.DataTable.AddColumn("dtToMove","SUCCESS","STRING","",1)
+f.Data.DataTable.Clone("dtToMove","dtMoved",True)
+f.Data.DataTable.Clone("dtToMove","dtFailed",True)
+Program.External.Include.Library("gcg_gsmobile_stage.lib")
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.sSql.Declare
+
+f.ODBC.Connection!con.opencompanyconnection
+
+F.Global.Mobile.GetCustomLine(V.Passed.DATA-TRANSID,v.Global.sWireLine)
+'f.Global.Mobile.GetCustomHeader("000000347",v.Global.sWireHeader)
+
+f.Intrinsic.String.Build("select DEFAULT_PRINTER, LABEL_PRINTER, USER_ID  from v_wireless_hdr where trans_id = '{0}'",V.Passed.DATA-TRANSID,V.Local.sSql)
+f.ODBC.Connection!con.ExecuteAndReturn(v.Local.sSql,v.Global.sWireHeader)
+f.ODBC.Connection!con.Close
+
+'split to arrays for the library
+f.Intrinsic.String.Split(v.Global.sWireHeader,"*!*",v.Global.sWireHeader)
+f.Intrinsic.String.Split(v.Global.sWireLine,"*!*",v.Global.sWireLine)
+
+
+f.Intrinsic.Control.CallSub(InitializeS30)
+f.Intrinsic.Control.CallSub(InitializeS15)
+
+
+
+'get staged records for the packlist passed in the mobile transaction
+f.Intrinsic.Control.CallSub(get_data)
+'build the data for both the S30 and S15 at the same time
+f.Intrinsic.Control.CallSub(build_data)
+
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.Catching.Start
+v.Local.sError.declare(string)
+F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","gcg_6914_bin2bin_staged.gsu",V.Ambient.NewLine,v.Args.sub,V.Args.errorno,V.args.errordesc,V.Local.sError)
+f.Intrinsic.UI.Msgbox(v.Local.sError)
+F.Intrinsic.Control.CallSub(unload)
+Program.Sub.Catching.End
+
+Program.Sub.unload.Start
+
+f.Intrinsic.Control.End
+
+Program.Sub.unload.End
+
+
+Program.Sub.get_data.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.sSql.Declare
+v.Local.sParams.Declare
+
+
+f.Intrinsic.String.Split(v.Global.sWireLine(1),"-",v.Local.sParams)
+
+f.ODBC.Connection!con.opencompanyconnection
+
+f.Intrinsic.String.Build("select A.*, B.PKGD_WEIGHT as TOT_CRTN_WEIGHT, B.TRACKING_NO AS CRTN_TRACK_NO, B.USER_DFND_NO AS CARTON_UDF, C.PKGD_WEIGHT AS TOT_PLLT_WEIGHT, C.TRCKNG_NO AS PLT_TRACK_NO, C.USR_DFND_NO AS PALLET_UDF from bol_pack_dtl A left join bol_carton_num B on A.PCK_NO = B.PCK_NO AND A.CRTN_NO = B.CRTN_NO LEFT JOIN BOL_PALLET_NUM C on A.PCK_NO = C.PCK_NO AND A.PLLT_NO = C.PLLT_NO where A.PCK_NO = '{0}' and A.PLLT_NO = '{1}' order by A.PLLT_NO, A.crtn_no",V.Local.sParams(0),V.Local.sParams(1),V.Local.sSql)
+F.Data.DataTable.CreateFromSQL("dtStaged","con",v.Local.sSql,True)
+
+f.ODBC.Connection!con.Close
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.get_data.End
+
+Program.Sub.build_data.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.iCount.Declare
+v.Local.sSql.Declare
+v.Local.sPltWeight.Declare
+v.Local.sPltTrack.Declare
+v.Local.sCrtnWeight.Declare
+v.Local.sCartonTrack.Declare
+
+
+'we are going to loop thorugh the datatable dtStaged and create records to post 1 at a time.  This way we can validate and build
+f.Intrinsic.Control.For(v.Local.iCount,0,v.DataTable.dtStaged.RowCount--,1)
+	'Add a row to S30 - remove from
+	f.Data.DataTable.AddRow("dtS30","PACKLIST",V.DataTable.dtStaged(V.Local.iCount).PCK_NO!FIELDVALTRIM,"ORDER_NO",V.DataTable.dtStaged(V.Local.iCount).ORDER_NO!FIELDVALTRIM,"LINE_NO",V.DataTable.dtStaged(V.Local.iCount).ORDER_LINE!FIELDVALTRIM,"PART",V.DataTable.dtStaged(V.Local.iCount).PART!FIELDVALTRIM,"LOC",V.DataTable.dtStaged(V.Local.iCount).LOCN!FIELDVALTRIM,"CRTN_NUM",v.DataTable.dtStaged(v.Local.iCount).CRTN_NO!FIELDVALTRIM,"PLT_NUM",V.DataTable.dtStaged(V.Local.iCount).PLLT_NO!FIELDVALTRIM,"QUANTITY",V.DataTable.dtStaged(V.Local.iCount).QTY!FIELDVALTRIM,"LOT",V.DataTable.dtStaged(V.Local.iCount).LOT!FIELDVALTRIM,"BIN",V.DataTable.dtStaged(V.Local.iCount).BIN!FIELDVALTRIM,"HEAT",V.DataTable.dtStaged(V.Local.iCount).HEAT!FIELDVALTRIM,"SERIAL",V.DataTable.dtStaged(V.Local.iCount).SERIAL!FIELDVALTRIM)
+	
+
+	'Add a row to S15 - this will perform a bin to bin and then re-stage the item against the packlist
+	f.Data.DataTable.AddRow("dtS15","PACKLIST",V.DataTable.dtStaged(V.Local.iCount).PCK_NO!FIELDVALTRIM,"ORDER_NO",V.DataTable.dtStaged(V.Local.iCount).ORDER_NO!FIELDVALTRIM,"LINE_NO",V.DataTable.dtStaged(V.Local.iCount).ORDER_LINE!FIELDVALTRIM,"PART",V.DataTable.dtStaged(V.Local.iCount).PART!FIELDVALTRIM,"LOC",V.DataTable.dtStaged(V.Local.iCount).LOCN!FIELDVALTRIM,"LOT",V.DataTable.dtStaged(V.Local.iCount).LOT!FIELDVALTRIM,"BIN",V.DataTable.dtStaged(V.Local.iCount).BIN!FIELDVALTRIM,"HEAT",V.DataTable.dtStaged(V.Local.iCount).HEAT!FIELDVALTRIM,"SERIAL",V.DataTable.dtStaged(V.Local.iCount).SERIAL!FIELDVALTRIM,"CRTN_NUM",V.DataTable.dtStaged(V.Local.iCount).CRTN_NO!FIELDVALTRIM,"PLT_NUM",V.DataTable.dtStaged(V.Local.iCount).PLLT_NO!FIELDVALTRIM,"CRTN_CODE",V.DataTable.dtStaged(V.Local.iCount).CRTN_CD!FIELDVALTRIM,"PLT_CODE",V.DataTable.dtStaged(V.Local.iCount).PLLT_CD!FIELDVALTRIM,"QUANTITY",V.DataTable.dtStaged(V.Local.iCount).QTY!FIELDVALTRIM,"PART_WEIGHT",V.DataTable.dtStaged(V.Local.iCount).LBS_PER_PC!FIELDVALTRIM,"TOT_CRTN_WEIGHT",V.DataTable.dtStaged(V.Local.iCount).TOT_CRTN_WEIGHT!FIELDVALTRIM,"CRTN_TRACK_NO",V.DataTable.dtStaged(V.Local.iCount).CRTN_TRACK_NO!FIELDVALTRIM,"TOT_PLT_WEIGHT",V.DataTable.dtStaged(V.Local.iCount).TOT_PLLT_WEIGHT!FIELDVALTRIM,"PLT_TRACK_NO",V.DataTable.dtStaged(V.Local.iCount).PLT_TRACK_NO!FIELDVALTRIM,"COMPLETE_LINE",,"TO_LOC",v.Global.sWireLine(3),"TO_BIN",V.Global.sWireLine(2))
+	
+f.Intrinsic.Control.Next(v.Local.iCount)
+
+f.Intrinsic.Control.CallSub(posting)
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.build_data.End
+
+Program.Sub.posting.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.iCount.Declare
+v.Local.sSql.Declare
+V.Local.sRet.Declare
+
+
+f.ODBC.Connection!con.opencompanyconnection
+'we are going to post these records 1 at a time so we can build log data and post it back to the custom result
+F.Intrinsic.Control.For(V.Local.iCount,0,V.DataTable.dtS30.RowCount--,1)
+	
+	f.Intrinsic.Control.CallSub(executeRow,"TABLE","dtS30","ROW",V.Local.iCount)
+	
+		F.Intrinsic.String.Build("SELECT SUCCESSFUL_FLAG FROM WIRELESS_HDR WHERE TRANS_ID = '{0}'",V.Args.TRANSID,V.Local.sSql)
+		f.Intrinsic.Control.DoUntil(v.Local.sRet,=,"Y",OR,V.Local.sRet,=,"N")
+			f.ODBC.Connection!con.ExecuteAndReturn(v.Local.sSql,v.Local.sRet)
+			f.Intrinsic.UI.Sleep(1)
+		f.Intrinsic.Control.Loop
+		
+		f.Intrinsic.Control.If(v.Local.sRet,=,"Y")
+			F.Data.DataTable.AddRow("dtToMove","TRANSID",V.Args.TRANSID,"PART",V.DataTable.dtS30(V.Local.iCount).PART!FIELDVALTRIM,"QTY",V.DataTable.dtS30(v.Local.iCount).QUANTITY!FIELDVALTRIM,"LOT",V.DataTable.dtS30(v.Local.iCount).LOT!FIELDVALTRIM,"BIN",V.DataTable.dtS30(v.Local.iCount).BIN!FIELDVALTRIM,"HEAT",V.DataTable.dtS30(v.Local.iCount).HEAT!FIELDVALTRIM,"SERIAL",V.DataTable.dtS30(v.Local.iCount).SERIAL!FIELDVALTRIM,"SUCCESS",V.Local.sRet)
+		f.Intrinsic.Control.Else
+			F.Data.DataTable.AddRow("dtFailed","TRANSID",V.Args.TRANSID,"PART",V.DataTable.dtS30(V.Local.iCount).PART!FIELDVALTRIM,"QTY",V.DataTable.dtS30(v.Local.iCount).QUANTITY!FIELDVALTRIM,"LOT",V.DataTable.dtS30(v.Local.iCount).LOT!FIELDVALTRIM,"BIN",V.DataTable.dtS30(v.Local.iCount).BIN!FIELDVALTRIM,"HEAT",V.DataTable.dtS30(v.Local.iCount).HEAT!FIELDVALTRIM,"SERIAL",V.DataTable.dtS30(v.Local.iCount).SERIAL!FIELDVALTRIM,"SUCCESS",V.Local.sRet)
+		f.Intrinsic.Control.EndIf
+
+
+	f.Intrinsic.Control.CallSub(executeRow,"TABLE","dtS15","ROW",V.Local.iCount)
+
+		
+		F.Intrinsic.String.Build("SELECT SUCCESSFUL_FLAG FROM WIRELESS_HDR WHERE TRANS_ID = '{0}'",V.Args.TRANSID,V.Local.sSql)
+		f.Intrinsic.Control.DoUntil(v.Local.sRet,=,"Y",OR,V.Local.sRet,=,"N")
+			f.ODBC.Connection!con.ExecuteAndReturn(v.Local.sSql,v.Local.sRet)
+			f.Intrinsic.UI.Sleep(1)
+		f.Intrinsic.Control.Loop
+		
+		f.Intrinsic.Control.If(v.Local.sRet,=,"Y")
+			F.Data.DataTable.AddRow("dtMoved","TRANSID",V.Args.TRANSID,"PART",V.DataTable.dtS30(V.Local.iCount).PART!FIELDVALTRIM,"QTY",V.DataTable.dtS30(v.Local.iCount).QUANTITY!FIELDVALTRIM,"LOT",V.DataTable.dtS30(v.Local.iCount).LOT!FIELDVALTRIM,"BIN",v.Global.sWireLine(2),"HEAT",V.DataTable.dtS30(v.Local.iCount).HEAT!FIELDVALTRIM,"SERIAL",V.DataTable.dtS30(v.Local.iCount).SERIAL!FIELDVALTRIM,"SUCCESS",V.Local.sRet)
+		f.Intrinsic.Control.Else
+			F.Data.DataTable.AddRow("dtFailed","TRANSID",V.Args.TRANSID,"PART",V.DataTable.dtS30(V.Local.iCount).PART!FIELDVALTRIM,"QTY",V.DataTable.dtS30(v.Local.iCount).QUANTITY!FIELDVALTRIM,"LOT",V.DataTable.dtS30(v.Local.iCount).LOT!FIELDVALTRIM,"BIN",v.Global.sWireLine(2),"HEAT",V.DataTable.dtS30(v.Local.iCount).HEAT!FIELDVALTRIM,"SERIAL",V.DataTable.dtS30(v.Local.iCount).SERIAL!FIELDVALTRIM,"SUCCESS",V.Local.sRet)
+		f.Intrinsic.Control.Endif
+	
+F.Intrinsic.Control.Next(V.Local.iCount)
+
+f.ODBC.Connection!con.Close
+
+f.Intrinsic.Control.CallSub(setReturn)
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.posting.End
+
+Program.Sub.setReturn.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.sText.Declare
+v.Local.sTable.Declare
+
+
+f.Intrinsic.Control.If(v.DataTable.dtToMove.RowCount,>,0)
+	f.Data.DataTable.ExportHTML("dtToMove","TRANSID*!*PART*!*QTY*!*LOT*!*BIN*!*HEAT*!*SERIAL*!*SUCCESS","TRANSID*!*PART*!*QTY*!*LOT*!*BIN*!*HEAT*!*SERIAL*!*SUCCESS","TOMOVE",False,v.Local.sTable)
+	f.Intrinsic.String.Build("{0}{1}<BR></BR>",V.Local.sTable,V.Ambient.NewLine,V.Local.sText)
+f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.If(V.DataTable.dtMoved.RowCount,>,0)
+	f.Data.DataTable.ExportHTML("dtMoved","TRANSID*!*PART*!*QTY*!*LOT*!*BIN*!*HEAT*!*SERIAL*!*SUCCESS","TRANSID*!*PART*!*QTY*!*LOT*!*BIN*!*HEAT*!*SERIAL*!*SUCCESS","MOVED",False,v.Local.sTable)
+	f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sText,v.Ambient.NewLine,v.Local.sTable,v.Local.sText)
+F.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.If(v.DataTable.dtFailed.RowCount,>,0)
+	f.Data.DataTable.ExportHTML("dtFailed","TRANSID*!*PART*!*QTY*!*LOT*!*BIN*!*HEAT*!*SERIAL*!*SUCCESS","TRANSID*!*PART*!*QTY*!*LOT*!*BIN*!*HEAT*!*SERIAL*!*SUCCESS","FAILED",False,v.Local.sTable)
+	f.Intrinsic.String.Build("{0}{1}{2}",v.Local.sText,v.Ambient.NewLine,v.Local.sTable,v.Local.sText)
+f.Intrinsic.Control.EndIf
+
+F.Global.Mobile.SetCustomResult(v.Caller.CompanyCode,V.Passed.DATA-TRANSID,V.Local.sText)
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catching,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.setReturn.End
+
+Program.Sub.Comments.Start
+${$5$}$20.1.8223.27623$}$1
+${$6$}$dfinch$}$20221011101746096$}$2O16bu3pcn8yPLUxA6F2Klx+ibLK1MdjrTJsULkQbHsdcQIwfXy6kPj47U1WtXXlQCaBwyfW+48=
+Program.Sub.Comments.End
