@@ -1,0 +1,517 @@
+﻿'This library is intended for the user of GS Mobile Staging Transactions.
+'Each transaction Number has it's own "iniitalize" subroutine which creates a data table with ONLY the necessary fields and those fields are named according to the data that they require.  This makes it easy for the developer to know what data goes in to the user fields of the wireless lines and wireless header table.
+'each transaction has a field mapping to map data from the "named" fields to their respective user field for the wireless lines table.
+'the list of transactions covered in this library are:
+'S10 - Add part to staged shipment
+'S15 - Add part to staged shipment with a bin to bin transfer
+'S20 - Modify staged part (add/remove to carton or pallet)
+'S30 - Remove part from packlist
+'S40 - Complete Shipment
+'S50 - Change Carrier
+
+'INSTRUCTIONS FOR YOUR SCRIPT
+'Retrieve the wirless header record
+	'F.Global.Mobile.GetCustomHeader("xxxxxxxxx",v.Global.sWireHeader)
+	'F.Global.Mobile.GetCustomLine("xxxxxxxxx",v.Global.sWireLine) 
+'Then split both varialbes in to arrays.
+'The library knows what array elements are used for what.
+
+'Next initialize the appropriate transaction tables that you'll need
+	'F.Intrinsic.Control.Callsub(initializeS10)
+'use your data and whatever is necessary to populate the dtS## table
+'once your dtS## table is populated with the transaction information, just call postmobile
+	'pass in the following arguments  
+	'"TABLE",<dtS##>
+	'optoinal is "ROW" with the specific row number.
+		'if you pass a row number, it will process a single row in the datatable before coming back to your script
+		
+		
+'in the event that you are trying to process 2 or 3 different transaction types, you will need to call each one of those individually.
+'if your transaction creates it's own datatable, you will want to move that data to the initialized table that you need
+'this program DOES NOT VALIDATE successful transactions as it does not know when or what to write to a log file, or what to write to he custom result table.  That is up to your program to manage.
+
+
+Program.Sub.Preflight.Start
+v.Global.sWireLine.Declare
+v.Global.sWireHeader.Declare
+Program.Sub.Preflight.End
+
+#Region "process"
+
+Program.Sub.PostMobile.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.bExists.Declare
+
+'was a table passed in to the library, if not, throw an error
+f.Intrinsic.Variable.ArgExists("TABLE",v.Local.bExists)
+f.Intrinsic.Control.If(v.Local.bExists,=,False)
+	f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno","noDatatable","errordesc","no datatable was passed in to the library")
+f.Intrinsic.Control.EndIf
+
+'was a row passed to the library, or are we just processing the whole table
+f.Intrinsic.Variable.ArgExists("ROW",V.Local.bExists)
+F.Intrinsic.Control.If(V.Local.bExists)
+	F.Intrinsic.Control.CallSub(executeRow,"TABLE",V.Args.TABLE,"ROW",V.Args.ROW)
+f.Intrinsic.Control.Else
+	f.Intrinsic.Control.CallSub(executetable,"TABLE",V.Args.TABLE)
+F.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.PostMobile.End
+
+Program.Sub.executeRow.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Local.sDate.Declare
+v.Local.sTime.Declare
+v.Local.iCount.Declare
+v.Local.sDataView.Declare
+V.Local.sFilter.Declare
+v.Local.sTransID.Declare
+v.Local.sTransType.Declare
+V.Local.sMap.Declare
+v.Local.sSql.Declare
+
+F.Intrinsic.Control.CallSub(GETtransID,"TABLE",V.Args.TABLE,"ROWS",V.Args.ROW)
+
+
+'build date and time variables for the data
+f.Intrinsic.String.Format(v.Ambient.Date,"YYYYMMDD",V.Local.sDate)
+F.Intrinsic.String.Build("{0}{1}{2}00",f.Intrinsic.Date.Hour(v.Ambient.Time),f.Intrinsic.Date.Minute(v.Ambient.Time),f.Intrinsic.Date.Second(v.Ambient.Time),v.Local.sTime)
+f.Intrinsic.Control.If(v.Local.sTime.Length,=,7)
+	f.Intrinsic.String.LPad(v.Local.sTime,"0",8,v.Local.sTime)
+f.Intrinsic.Control.EndIf
+
+
+'create a view name
+f.Intrinsic.String.Replace(v.Args.TABLE,"dt","dv",v.Local.sDataView)
+'create the filter
+v.Local.sTransID.Set(v.DataTable.[v.Args.TABLE](V.Args.ROW).TRANS_ID!FIELDVALTRIM)
+f.Intrinsic.String.Build("TRANS_ID = '{0}'",V.Local.sTransID,v.Local.sFilter)
+'create the view
+f.Intrinsic.Control.If(v.DataView.[v.Args.TABLE]![V.Local.sDataView].exists,=,False)
+	f.Data.DataView.Create(v.Args.TABLE,V.Local.sDataView,22,V.Local.sFilter,"")
+f.Intrinsic.Control.Else
+	f.Data.DataView.SetFilter(v.Args.TABLE,v.Local.sDataView,v.Local.sFilter)
+f.Intrinsic.Control.EndIf
+
+'now move that one row to a temp table
+f.Data.DataView.ToDataTable(v.Args.TABLE,v.Local.sDataView,"dtTemp")
+'add a header record so we can update the saved header in the datatabase
+'determine which map to use
+f.Intrinsic.Control.SelectCase(v.DataTable.dtTemp(0).TRANS_TYPE!FIELDVALTRIM)
+	F.Intrinsic.Control.Case("S10")
+		v.Local.sMap.Set(v.Global.s10Map)
+		v.Local.sTransType.Set("S10")
+	F.Intrinsic.Control.Case("S15")
+		v.Local.sMap.Set(v.Global.s15Map)
+		v.Local.sTransType.Set("S15")
+	F.Intrinsic.Control.Case("S20")
+		v.Local.sMap.Set(v.Global.s20Map)
+		v.Local.sTransType.Set("S20")
+	F.Intrinsic.Control.Case("S30")
+		v.Local.sMap.Set(v.Global.s30Map)
+		v.Local.sTransType.Set("S30")
+	F.Intrinsic.Control.Case("S40")
+		v.Local.sMap.Set(v.Global.s40Map)
+		v.Local.sTransType.Set("S40")
+	F.Intrinsic.Control.Case("S50")
+		v.Local.sMap.Set(v.Global.s50Map)
+		v.Local.sTransType.Set("S50")
+f.Intrinsic.Control.EndSelect
+
+
+f.Intrinsic.String.Build("UPDATE WIRELESS_HDR SET TRANS_TYPE = '{0}', SUCCESSFUL_FLAG = '',ATTEMPTED_FLAG = '',ATTEMPTED_DATE = '00000000',ATTEMPTED_TIME = '00000000', DEFAULT_PRINTER = '{1}', LABEL_PRINTER = '{2}', USER_ID = '{3}', BATCH = '0', USE_LABEL_PRINTER = '0', DATE_LAST_CHG = '{4}', TIME_LAST_CHG = '{5}', LAST_CHG_BY = 'GSMOBILE' WHERE TRANS_ID = '{6}'",V.Local.sTransType,V.Global.sWireHeader(0),V.Global.sWireHeader(1),V.Global.sWireHeader(2),V.Local.sDate,V.Local.sTime,V.Local.sTransID,V.Local.sSql)
+
+F.ODBC.Connection!wir.opencompanyconnection
+
+F.Data.DataTable.SaveToDB("dtTemp","wir","WIRELESS_LINE","TRANS_ID",128,V.Local.sMap)
+'wireless header has to be written with an open recordset because 
+'f.Data.DataTable.SaveToDB(v.DataTable.dtWHeader,"wir","WIRELESS_HDR",256)
+F.ODBC.Connection!wir.Execute(v.Local.sSql)
+
+F.Data.DataTable.Close("dtTemp")
+f.Data.DataTable.DeleteRow("dtWHeader")
+f.Data.DataTable.AcceptChanges("dtWHeader")
+
+F.ODBC.Connection!wir.Close
+
+f.Intrinsic.Variable.AddRV("TRANSID",V.Local.sTransID)
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.executeRow.End
+
+Program.Sub.executetable.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+F.Intrinsic.Control.CallSub(GETtransID,"ROWS","FALSE","TABLE",V.Args.TABLE)
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.executetable.End
+
+Program.Sub.GETtransID.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+V.Local.bExists.Declare
+v.Local.sID.Declare
+v.Local.iCount.Declare
+
+f.ODBC.Connection!wirid.opencompanyconnection
+
+'row or full table?
+f.Intrinsic.Control.If(f.Intrinsic.Variable.ArgExists("ROWS"))
+	'get a single ID and save it to the wireless header table so as not to lose it
+	Function.ODBC.Connection!wirid.GetID("WIRELESS_HDR" ,"TRANS_ID",True,v.Local.sID)
+	f.Intrinsic.String.LPad(v.Local.sID,"0",9 ,v.Local.sID)
+	f.ODBC.Connection!wirid.OpenLocalRecordsetRW("wir","select * from wireless_hdr")
+	f.ODBC.wirid!wir.AddNew
+		f.ODBC.wirid!wir.Set!TRANS_ID(V.Local.sID)
+		F.ODBC.wirid!wir.Set!ATTEMPTED_FLAG("Y")
+		F.ODBC.wirid!wir.Update
+		f.ODBC.wirid!wir.Close
+		'set the trans_id in the datatable for the specific row we're looking at
+		f.Data.DataTable.SetValue(v.Args.TABLE,v.Args.ROWS,"TRANS_ID",v.Local.sID)
+F.Intrinsic.Control.Else
+	'we are looking at an entire table, so we're going to loop through the table itself
+	f.ODBC.Connection!wirid.OpenLocalRecordsetRW("wir","select * from wireless_hdr")
+	'now let's loop through the datatable, update the table and add the new ID to the wireless_hdr so it's reserved
+	f.Intrinsic.Control.For(v.Local.iCount,0,v.DataTable.[v.Args.TABLE].RowCount--,1)
+		F.ODBC.Connection!wirid.GetID("WIRELESS_HDR","TRANS_ID",True,v.Local.sID)
+		F.Intrinsic.String.LPad(V.Local.sID,"0",9,V.Local.sID)
+		'recordset is already open so just add a new record
+			f.ODBC.wir!wirid.AddNew
+			f.ODBC.wirid!wir.Set!TRANS_ID(V.Local.sID)
+			F.ODBC.wirid!wir.Set!ATTEMPTED_FLAG("Y")
+			F.ODBC.wirid!wir.Update
+			f.Data.DataTable.SetValue(v.Args.TABLE,v.Local.iCount,"TRANS_ID",V.Local.sID)
+	f.Intrinsic.Control.Next(v.Local.iCount)
+	f.ODBC.wirid!wir.Close
+f.Intrinsic.Control.EndIf
+
+f.ODBC.Connection!wirid.Close
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.GETtransID.End
+
+#End Region ' process
+
+
+#Region "iniitalize"
+
+
+Program.Sub.InitializeS10.Start
+'STAGE NEW PART
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.s10Map.Declare
+
+
+F.Data.DataTable.Create("dtS10",True)
+f.Data.DataTable.AddColumn("dtS10","TRANS_ID","STRING","",9) 'the library will take care of this 
+F.Data.DataTable.AddColumn("dtS10","SEQ","STRING","0000",4)  'Mobile trans will always default to 0000
+F.Data.DataTable.AddColumn("dtS10","TRANS_TYPE" ,"STRING","S10",3) 'Default is set
+F.Data.DataTable.AddColumn("dtS10","PACKLIST","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS10","ORDER_NO","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS10","LINE_NO","STRING","",30) 'Left pad with 0s to 3 characters 001
+F.Data.DataTable.AddColumn("dtS10","PART","STRING","",30) 'part and rev, 20 chars
+F.Data.DataTable.AddColumn("dtS10","LOC","STRING","",30) '2 chars validate and pad as needed
+F.Data.DataTable.AddColumn("dtS10","LOT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS10","BIN","STRING","",30) 'max 6 chars
+F.Data.DataTable.AddColumn("dtS10","HEAT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS10","SERIAL","STRING","",30) ' max 30 chars
+F.Data.DataTable.AddColumn("dtS10","CRTN_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS10","PLT_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS10","CRTN_CODE","STRING","",30) 'validate
+F.Data.DataTable.AddColumn("dtS10","PLT_CODE","STRING","",30) 'validate
+F.Data.DataTable.AddColumn("dtS10","QUANTITY","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS10","PART_WEIGHT","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS10","TOT_CRTN_WEIGHT","STRING","",30) 'max 4 decimals, not required
+F.Data.DataTable.AddColumn("dtS10","CRTN_TRACK_NO","STRING","",30) 'max 30 characters
+F.Data.DataTable.AddColumn("dtS10","TOT_PLT_WEIGHT","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS10","PLT_TRACK_NO","STRING","",30) 'max 30 characters
+F.Data.DataTable.AddColumn("dtS10","COMPLETE_LINE","STRING","",30) '1/0 as WIR200 reads it as a bit
+F.Data.DataTable.AddColumn("dtS10","NO_OF_CTRNS","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS10","PRINT_LBL","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS10","PRINT_QTY","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS10","DATE_LAST_CHG","STRING","",8) 'date in YYYYMMDD format
+F.Data.DataTable.AddColumn("dtS10","TIME_LAST_CHG","STRING","",8) '24 hr time HHMMSS with 00 at the end
+F.Data.DataTable.AddColumn("dtS10","LAST_CHG_BY","STRING","GSMOBILE",8)
+'dtfield@!@dbField*!*
+
+v.Global.s10Map.Set("TRANS_ID@!@TRANS_ID*!*SEQ@!@SEQ*!*TRANS_TYPE@!@TRANS_TYPE*!*PACKLIST@!@FIELD_1*!*ORDER_NO@!@FIELD_2*!*LINE_NO@!@FIELD_3*!*PART@!@FIELD_4*!*LOC@!@FIELD_5*!*LOT@!@FIELD_6*!*BIN@!@FIELD_7*!*HEAT@!@FIELD_8*!*SERIAL@!@FIELD_9*!*CRTN_NUM@!@FIELD_10*!*PLT_NUM@!@FIELD_11*!*CRTN_CODE@!@FIELD_12*!*PLT_CODE@!@FIELD_13*!*QUANTITY@!@FIELD_14*!*PART_WEIGHT@!@FIELD_15*!*TOT_CRTN_WEIGHT@!@FIELD_16*!*CRTN_TRACK_NO@!@FIELD_17*!*TOT_PLT_WEIGHT@!@FIELD_18*!*PLT_TRACK_NO@!@FIELD_19*!*COMPLETE_LINE@!@FIELD_20*!*NO_OF_CRTNS@!@FIELD_23*!*PRINT_LBL@!@FIELD_24*!*PRINT_QTY@!@FIELD_25*!*DATE_LAST_CHG@!@DATE_LAST_CHG*!*TIME_LAST_CHG@!@TIME_LAST_CHG*!*LAST_CHG_BY@!@LAST_CHG_BY")
+
+f.Intrinsic.Control.If(v.DataTable.dtWHeader.Exists,=,False)
+	f.Intrinsic.Control.CallSub(initializeHeader)
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.InitializeS10.End
+
+
+Program.Sub.InitializeS15.Start
+'STAGE NEW PART WITH BIN TO BIN TRANSACTION
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.s15Map.Declare
+
+F.Data.DataTable.Create("dtS15",True)
+f.Data.DataTable.AddColumn("dtS15","TRANS_ID","STRING","",9) 'the library will take care of this
+F.Data.DataTable.AddColumn("dtS15","SEQ","STRING","0000",4)  'Mobile trans will always default to 0000
+F.Data.DataTable.AddColumn("dtS15","TRANS_TYPE" ,"STRING","S15",3) 'Default is set
+F.Data.DataTable.AddColumn("dtS15","PACKLIST","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS15","ORDER_NO","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS15","LINE_NO","STRING","",30) 'Left pad with 0s to 3 characters 001
+F.Data.DataTable.AddColumn("dtS15","PART","STRING","",30) 'part and rev, 20 chars
+F.Data.DataTable.AddColumn("dtS15","LOC","STRING","",30) '2 chars validate and pad as needed
+F.Data.DataTable.AddColumn("dtS15","LOT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS15","BIN","STRING","",30) 'max 6 chars
+F.Data.DataTable.AddColumn("dtS15","HEAT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS15","SERIAL","STRING","",30) ' max 30 chars
+F.Data.DataTable.AddColumn("dtS15","CRTN_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS15","PLT_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS15","CRTN_CODE","STRING","",30) 'validate
+F.Data.DataTable.AddColumn("dtS15","PLT_CODE","STRING","",30) 'validate
+F.Data.DataTable.AddColumn("dtS15","QUANTITY","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS15","PART_WEIGHT","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS15","TOT_CRTN_WEIGHT","STRING","",30) 'max 4 decimals, not required
+F.Data.DataTable.AddColumn("dtS15","CRTN_TRACK_NO","STRING","",30) 'max 30 characters
+F.Data.DataTable.AddColumn("dtS15","TOT_PLT_WEIGHT","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS15","PLT_TRACK_NO","STRING","",30) 'max 30 characters
+F.Data.DataTable.AddColumn("dtS15","COMPLETE_LINE","STRING","",30) '1/0 as WIR200 reads it as a bit
+F.Data.DataTable.AddColumn("dtS15","TO_LOC","STRING","",30) '2 chars validate and pad as needed
+F.Data.DataTable.AddColumn("dtS15","TO_BIN","STRING","",30) 'max 6 characters validate as needed
+F.Data.DataTable.AddColumn("dtS15","NO_OF_CRTNS","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS15","PRINT_LBL","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS15","PRINT_QTY","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS15","DATE_LAST_CHG","STRING","",8) 'date in YYYYMMDD format
+F.Data.DataTable.AddColumn("dtS15","TIME_LAST_CHG","STRING","",8) '24 hr time HHMMSS with 00 at the end
+F.Data.DataTable.AddColumn("dtS15","LAST_CHG_BY","STRING","GSMOBILE",8)
+
+V.Global.s15Map.Set("TRANS_ID@!@TRANS_ID*!*SEQ@!@SEQ*!*TRANS_TYPE@!@TRANS_TYPE*!*PACKLIST@!@FIELD_1*!*ORDER_NO@!@FIELD_2*!*LINE_NO@!@FIELD_3*!*PART@!@FIELD_4*!*TO_LOC@!@FIELD_5*!*LOT@!@FIELD_6*!*TO_BIN@!@FIELD_7*!*HEAT@!@FIELD_8*!*SERIAL@!@FIELD_9*!*CRTN_NUM@!@FIELD_10*!*PLT_NUM@!@FIELD_11*!*CRTN_CODE@!@FIELD_12*!*PLT_CODE@!@FIELD_13*!*QUANTITY@!@FIELD_14*!*PART_WEIGHT@!@FIELD_15*!*TOT_CRTN_WEIGHT@!@FIELD_16*!*CRTN_TRACK_NO@!@FIELD_17*!*TOT_PLT_WEIGHT@!@FIELD_18*!*PLT_TRACK_NO@!@FIELD_19*!*COMPLETE_LINE@!@FIELD_20*!*LOC@!@FIELD_21*!*BIN@!@FIELD_22*!*NO_OF_CRTNS@!@FIELD_23*!*PRINT_LBL@!@FIELD_24*!*PRINT_QTY@!@FIELD_25*!*DATE_LAST_CHG@!@DATE_LAST_CHG*!*TIME_LAST_CHG@!@TIME_LAST_CHG*!*LAST_CHG_BY@!@LAST_CHG_BY")
+
+f.Intrinsic.Control.If(v.DataTable.dtWHeader.Exists,=,False)
+	f.Intrinsic.Control.CallSub(initializeHeader)
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.InitializeS15.End
+
+Program.Sub.InitializeS20.Start
+'MODIFY STAGED PART (USUALLY CARTON OR PALLET)
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.s20Map.Declare
+
+F.Data.DataTable.Create("dtS20",True)
+f.Data.DataTable.AddColumn("dtS20","TRANS_ID","STRING","",9) 'the library will take care of this
+F.Data.DataTable.AddColumn("dtS20","SEQ","STRING","0000",4)  'Mobile trans will always default to 0000
+F.Data.DataTable.AddColumn("dtS20","TRANS_TYPE" ,"STRING","S20",3) 'Default is set
+F.Data.DataTable.AddColumn("dtS20","PACKLIST","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS20","ORDER_NO","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS20","LINE_NO","STRING","",30) 'Left pad with 0s to 3 characters 001
+F.Data.DataTable.AddColumn("dtS20","PART","STRING","",30) 'part and rev, 20 chars
+F.Data.DataTable.AddColumn("dtS20","LOC","STRING","",30) '2 chars validate and pad as needed
+F.Data.DataTable.AddColumn("dtS20","LOT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS20","BIN","STRING","",30) 'max 6 chars
+F.Data.DataTable.AddColumn("dtS20","HEAT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS20","SERIAL","STRING","",30) ' max 30 chars
+F.Data.DataTable.AddColumn("dtS20","CRTN_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS20","PLT_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS20","CRTN_CODE","STRING","",30) 'validate
+F.Data.DataTable.AddColumn("dtS20","PLT_CODE","STRING","",30) 'validate
+F.Data.DataTable.AddColumn("dtS20","QUANTITY","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS20","PART_WEIGHT","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS20","TOT_CRTN_WEIGHT","STRING","",30) 'max 4 decimals, not required
+F.Data.DataTable.AddColumn("dtS20","CRTN_TRACK_NO","STRING","",30) 'max 30 characters
+F.Data.DataTable.AddColumn("dtS20","TOT_PLT_WEIGHT","STRING","",30) 'max 4 decimal places, not required
+F.Data.DataTable.AddColumn("dtS20","PLT_TRACK_NO","STRING","",30) 'max 30 characters
+F.Data.DataTable.AddColumn("dtS20","NEW_CRTN","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS20","NEW_PLT","STRING","",30) '2 chars validate and pad as needed
+F.Data.DataTable.AddColumn("dtS20","REMOVE_CRTN","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS20","REMOVE_PLT","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS20","PRINT_LBL","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS20","PRINT_QTY","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS20","DATE_LAST_CHG","STRING","",8) 'date in YYYYMMDD format
+F.Data.DataTable.AddColumn("dtS20","TIME_LAST_CHG","STRING","",8) '24 hr time HHMMSS with 00 at the end
+F.Data.DataTable.AddColumn("dtS20","LAST_CHG_BY","STRING","GSMOBILE",8)
+
+V.Global.s20Map.Set("TRANS_ID@!@TRANS_ID*!*SEQ@!@SEQ*!*TRANS_TYPE@!@TRANS_TYPE*!*PACKLIST@!@FIELD_1*!*ORDER_NO@!@FIELD_2*!*LINE_NO@!@FIELD_3*!*PART@!@FIELD_4*!*LOC@!@FIELD_5*!*LOT@!@FIELD_6*!*BIN@!@FIELD_7*!*HEAT@!@FIELD_8*!*SERIAL@!@FIELD_9*!*CRTN_NUM@!@FIELD_10*!*PLT_NUM@!@FIELD_11*!*CRTN_CODE@!@FIELD_12*!*PLT_CODE@!@FIELD_13*!*QUANTITY@!@FIELD_14*!*PART_WEIGHT@!@FIELD_15*!*TOT_CRTN_WEIGHT@!@FIELD_16*!*CRTN_TRACK_NO@!@FIELD_17*!*TOT_PLT_WEIGHT@!@FIELD_18*!*PLT_TRACK_NO@!@FIELD_19*!*NEW_CRTN@!@FIELD_20*!*NEW_PLT@!@FIELD_21*!*REMOVE_CRTN@!@FIELD_22*!*REMOVE_PLT@!@FIELD_23*!*PRINT_LBL@!@FIELD_24*!*PRINT_QTY@!@FIELD_25*!*DATE_LAST_CHG@!@DATE_LAST_CHG*!*TIME_LAST_CHG@!@TIME_LAST_CHG*!*LAST_CHG_BY@!@LAST_CHG_BY")
+
+f.Intrinsic.Control.If(v.DataTable.dtWHeader.Exists,=,False)
+	f.Intrinsic.Control.CallSub(initializeHeader)
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.InitializeS20.End
+
+Program.Sub.InitializeS30.Start
+'REMOVE STAGED PART
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.s30Map.Declare
+
+F.Data.DataTable.Create("dtS30",True)
+f.Data.DataTable.AddColumn("dtS30","TRANS_ID","STRING","",9) 'the library will take care of this
+F.Data.DataTable.AddColumn("dtS30","SEQ","STRING","0000",4)  'Mobile trans will always default to "0000"
+F.Data.DataTable.AddColumn("dtS30","TRANS_TYPE" ,"STRING","S30",3) 'Default is set
+F.Data.DataTable.AddColumn("dtS30","PACKLIST","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS30","ORDER_NO","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS30","LINE_NO","STRING","",30) 'Left pad with 0s to 3 characters
+F.Data.DataTable.AddColumn("dtS30","PART","STRING","",30) 'part and rev, 20 chars
+F.Data.DataTable.AddColumn("dtS30","LOC","STRING","",30) '2 chars validate and pad as needed
+F.Data.DataTable.AddColumn("dtS30","CRTN_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS30","PLT_NUM","STRING","",30) 'left pad with 0s to 8 characters
+F.Data.DataTable.AddColumn("dtS30","QUANTITY","STRING","",30) 'quantity in carton - or pallet if no carton used
+F.Data.DataTable.AddColumn("dtS30","LOT","STRING","",30) ' max 15 chars
+F.Data.DataTable.AddColumn("dtS30","BIN","STRING","",30) 'max 6 chars
+F.Data.DataTable.AddColumn("dtS30","HEAT","STRING","",30) 'max 15 chars
+F.Data.DataTable.AddColumn("dtS30","SERIAL","STRING","",30) 'max 30 chars
+F.Data.DataTable.AddColumn("dtS30","DATE_LAST_CHG","STRING","",8) 'date in YYYYMMDD format
+F.Data.DataTable.AddColumn("dtS30","TIME_LAST_CHG","STRING","",8) '24 hr time HHMMSS with 00 at the end
+F.Data.DataTable.AddColumn("dtS30","LAST_CHG_BY","STRING","GSMOBILE",8)
+
+V.Global.s30Map.Set("TRANS_ID@!@TRANS_ID*!*SEQ@!@SEQ*!*TRANS_TYPE@!@TRANS_TYPE*!*PACKLIST@!@FIELD_1*!*ORDER_NO@!@FIELD_2*!*LINE_NO@!@FIELD_3*!*PART@!@FIELD_4*!*LOC@!@FIELD_5*!*CRTN_NUM@!@FIELD_6*!*PLT_NUM@!@FIELD_7*!*QUANTITY@!@FIELD_8*!*LOT@!@FIELD_9*!*BIN@!@FIELD_10*!*HEAT@!@FIELD_11*!*SERIAL@!@FIELD_12*!*DATE_LAST_CHG@!@DATE_LAST_CHG*!*TIME_LAST_CHG@!@TIME_LAST_CHG*!*LAST_CHG_BY@!@LAST_CHG_BY")
+
+f.Intrinsic.Control.If(v.DataTable.dtWHeader.Exists,=,False)
+	f.Intrinsic.Control.CallSub(initializeHeader)
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.InitializeS30.End
+
+Program.Sub.InitializeS40.Start
+'COMPLETE SHIPMENT
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.s40Map.Declare
+
+F.Data.DataTable.Create("dtS40",True)
+f.Data.DataTable.AddColumn("dtS40","TRANS_ID","STRING","",9) 'the library will take care of this
+F.Data.DataTable.AddColumn("dtS40","SEQ","STRING","0000",4)  'Mobile trans will always default to 0000
+F.Data.DataTable.AddColumn("dtS40","TRANS_TYPE" ,"STRING","S40",3) 'Default is set
+F.Data.DataTable.AddColumn("dtS40","PACKLIST","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS40","PRINT_LBL","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS40","PRINT_QTY","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS40","DATE_LAST_CHG","STRING","",8) 'date in YYYYMMDD format
+F.Data.DataTable.AddColumn("dtS40","TIME_LAST_CHG","STRING","",8) '24 hr time HHMMSS with 00 at the end
+F.Data.DataTable.AddColumn("dtS40","LAST_CHG_BY","STRING","GSMOBILE",8)
+
+V.Global.s40Map.Set("TRANS_ID@!@TRANS_ID*!*SEQ@!@SEQ*!*TRANS_TYPE@!@TRANS_TYPE*!*PACKLIST@!@FIELD_1*!*PRINT_LBL@!@FIELD_24*!*PRINT_QTY@!@FIELD_25*!*DATE_LAST_CHG@!@DATE_LAST_CHG*!*TIME_LAST_CHG@!@TIME_LAST_CHG*!*LAST_CHG_BY@!@LAST_CHG_BY")
+
+f.Intrinsic.Control.If(v.DataTable.dtWHeader.Exists,=,False)
+	f.Intrinsic.Control.CallSub(initializeHeader)
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.InitializeS40.End
+
+Program.Sub.InitializeS50.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.s50Map.Declare
+
+F.Data.DataTable.Create("dtS50",True)
+f.Data.DataTable.AddColumn("dtS50","TRANS_ID","STRING","",9) 'the library will take care of this
+F.Data.DataTable.AddColumn("dtS50","SEQ","STRING","0000",4)  'Mobile trans will always default to 0000
+F.Data.DataTable.AddColumn("dtS50","TRANS_TYPE" ,"STRING","S50",3) 'Default is set
+F.Data.DataTable.AddColumn("dtS50","PACKLIST","STRING","",30) 'left pad with 0s to 7 characters
+F.Data.DataTable.AddColumn("dtS50","PRINT_LBL","STRING","",30) 'Y/N
+F.Data.DataTable.AddColumn("dtS50","PRINT_QTY","STRING","",30) 'integer
+F.Data.DataTable.AddColumn("dtS50","DATE_LAST_CHG","STRING","",8) 'date in YYYYMMDD format
+F.Data.DataTable.AddColumn("dtS50","TIME_LAST_CHG","STRING","",8) '24 hr time HHMMSS with 00 at the end
+F.Data.DataTable.AddColumn("dtS50","LAST_CHG_BY","STRING","GSMOBILE",8)
+
+V.Global.s50Map.Set("TRANS_ID@!@TRANS_ID*!*SEQ@!@SEQ*!*TRANS_TYPE@!@TRANS_TYPE*!*PACKLIST@!@FIELD_1*!*PRINT_LBL@!@FIELD_2*!*PRINT_QTY*!*DATE_LAST_CHG@!@DATE_LAST_CHG*!*TIME_LAST_CHG@!@TIME_LAST_CHG*!*LAST_CHG_BY@!@LAST_CHG_BY")
+
+f.Intrinsic.Control.If(v.DataTable.dtWHeader.Exists,=,False)
+	f.Intrinsic.Control.CallSub(initializeHeader)
+f.Intrinsic.Control.EndIf
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.InitializeS50.End
+
+Program.Sub.initializeHeader.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+v.Global.sWHMap.Declare
+
+f.ODBC.Connection!lib.OpenCompanyConnection
+
+f.Data.DataTable.CreateFromSQL("dtWHeader","lib" ,"select top 0 * from wireless_hdr",True)
+
+f.ODBC.Connection!lib.Close
+
+'TRANS_ID
+'TRANS_TYPE
+'SUCCESSFUL_FLAG
+'ATTEMPTED_FLAG
+'ATTEMPTED_DATE
+'ATTEMPTED_TIME
+'DEFAULT_PRINTER
+'LABEL_PRINTER
+'USER_ID
+'BATCH
+'USE_LABEL_PRINTER
+'FILLER
+'DATE_LAST_CHG
+'TIME_LAST_CHG
+'LAST_CHG_BY
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.initializeHeader.End
+
+
+#End Region ' iniitalize
+
+
+#Region "errHandle"
+
+Program.Sub.Catchlib.Start
+v.Local.sError.declare(string)
+F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}","gcg_sgmobile_stage.lib",V.Ambient.NewLine,v.Args.sub,V.Args.errorno,V.args.errordesc,V.Local.sError)
+f.Intrinsic.UI.Msgbox(v.Local.sError)
+F.Intrinsic.Control.CallSub(Unloadlib)
+Program.Sub.Catchlib.End
+
+Program.Sub.Unloadlib.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+
+
+
+f.Intrinsic.Control.catch
+f.Intrinsic.Control.CallSub(catchlib,"sub",v.Ambient.CurrentSubroutine,"errorno",v.Ambient.ErrorNumber,"errordesc",v.Ambient.ErrorDescription)
+f.Intrinsic.Control.EndTry
+Program.Sub.Unloadlib.End
+
+#End Region ' errHandle
+
+Program.Sub.Comments.Start
+${$5$}$20.1.8223.27623$}$1
+${$6$}$dfinch$}$20221010092119796$}$2O16bu3pcn8yPLUxA6F2Klx+ibLK1MdjrTJsULkQbHtn/SLxLfcN96cszx2tQkVFWLknEPfux4s=
+Program.Sub.Comments.End
